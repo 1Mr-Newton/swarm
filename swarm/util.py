@@ -1,5 +1,6 @@
 import inspect
 from datetime import datetime
+from typing import Union, List, Optional, get_origin, get_args, Dict, Any
 
 
 def debug_print(debug: bool, *args: str) -> None:
@@ -27,6 +28,7 @@ def merge_chunk(final_response: dict, delta: dict) -> None:
         index = tool_calls[0].pop("index")
         merge_fields(final_response["tool_calls"][index], tool_calls[0])
 
+ 
 
 def function_to_json(func) -> dict:
     """
@@ -50,6 +52,61 @@ def function_to_json(func) -> dict:
         type(None): "null",
     }
 
+    def parse_type(annotation):
+        origin = get_origin(annotation)
+        args = get_args(annotation)
+
+        if origin is Union:
+            # Handle Optional[...] which is Union[..., None]
+            if type(None) in args:
+                non_none_types = [arg for arg in args if arg is not type(None)]
+                if len(non_none_types) == 1:
+                    parsed = parse_type(non_none_types[0])
+                    if isinstance(parsed, dict) and "type" in parsed:
+                        parsed["nullable"] = True
+                        return parsed
+            # General Union types can be represented as multiple types
+            types = []
+            items = None
+            for arg in args:
+                parsed = parse_type(arg)
+                if isinstance(parsed, dict):
+                    types.append(parsed.get("type", "string"))
+                    if parsed.get("type") == "array" and "items" in parsed:
+                        items = parsed["items"]
+                else:
+                    types.append("string")
+            # Remove duplicates
+            types = list(set(types))
+            schema = {"type": types}
+            if items:
+                schema["items"] = items
+            return schema
+
+        elif origin in [list, List]:
+            items_type = "string"  # Default to string if not specified
+            if args:
+                parsed_items = parse_type(args[0])
+                if isinstance(parsed_items, dict):
+                    items_type = parsed_items.get("type", "string")
+            return {"type": "array", "items": {"type": items_type}}
+
+        elif origin in [dict, Dict]:
+            additional_properties = {
+                "type": "string"
+            }  # Default to string if not specified
+            if len(args) == 2:
+                key_type, value_type = args
+                # Typically, JSON object keys are strings
+                # But we'll parse value_type for the type
+                parsed_value = parse_type(value_type)
+                if isinstance(parsed_value, dict):
+                    additional_properties = parsed_value
+            return {"type": "object", "additionalProperties": additional_properties}
+
+        else:
+            return {"type": type_map.get(annotation, "string")}
+
     try:
         signature = inspect.signature(func)
     except ValueError as e:
@@ -59,18 +116,16 @@ def function_to_json(func) -> dict:
 
     parameters = {}
     for param in signature.parameters.values():
-        try:
-            param_type = type_map.get(param.annotation, "string")
-        except KeyError as e:
-            raise KeyError(
-                f"Unknown type annotation {param.annotation} for parameter {param.name}: {str(e)}"
-            )
-        parameters[param.name] = {"type": param_type}
+        if param.annotation == inspect.Parameter.empty:
+            param_type = {"type": "string"}  # Default type if no annotation
+        else:
+            param_type = parse_type(param.annotation)
+        parameters[param.name] = param_type
 
     required = [
         param.name
         for param in signature.parameters.values()
-        if param.default == inspect._empty
+        if param.default == inspect.Parameter.empty
     ]
 
     return {
