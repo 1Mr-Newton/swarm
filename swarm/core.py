@@ -2,7 +2,7 @@
 import copy
 import json
 from collections import defaultdict
-from typing import List, Callable, Union
+from typing import List, Callable, Union, Optional, Generator, Any
 
 # Package/library imports
 from openai import OpenAI
@@ -35,6 +35,7 @@ class Swarm:
         history: List,
         context_variables: dict,
         model_override: str,
+        temp_overide: float,
         stream: bool,
         debug: bool,
     ) -> ChatCompletionMessage:
@@ -61,6 +62,7 @@ class Swarm:
             "tools": tools or None,
             "tool_choice": agent.tool_choice,
             "stream": stream,
+            "temperature": temp_overide or agent.temperature,
         }
 
         if tools:
@@ -92,10 +94,11 @@ class Swarm:
         functions: List[AgentFunction],
         context_variables: dict,
         debug: bool,
-    ) -> Response:
+    ) -> Union[
+        Response, Generator[Union[dict[str, str], Any, dict[str, Response]], Any, None]
+    ]:
         function_map = {f.__name__: f for f in functions}
-        partial_response = Response(
-            messages=[], agent=None, context_variables={})
+        partial_response = Response(messages=[], agent=None, context_variables={})
 
         for tool_call in tool_calls:
             name = tool_call.function.name
@@ -112,8 +115,7 @@ class Swarm:
                 )
                 continue
             args = json.loads(tool_call.function.arguments)
-            debug_print(
-                debug, f"Processing tool call: {name} with arguments {args}")
+            debug_print(debug, f"Processing tool call: {name} with arguments {args}")
 
             func = function_map[name]
             # pass context_variables to agent functions
@@ -142,10 +144,11 @@ class Swarm:
         messages: List,
         context_variables: dict = {},
         model_override: str = None,
+        temp_overide: float = None,
         debug: bool = False,
         max_turns: int = float("inf"),
         execute_tools: bool = True,
-    ):
+    ) -> Generator[Union[dict[str, str], Any, dict[str, Response]], Any, None]:
         active_agent = agent
         context_variables = copy.deepcopy(context_variables)
         history = copy.deepcopy(messages)
@@ -173,6 +176,7 @@ class Swarm:
                 history=history,
                 context_variables=context_variables,
                 model_override=model_override,
+                temp_overide=temp_overide,
                 stream=True,
                 debug=debug,
             )
@@ -188,8 +192,7 @@ class Swarm:
                 merge_chunk(message, delta)
             yield {"delim": "end"}
 
-            message["tool_calls"] = list(
-                message.get("tool_calls", {}).values())
+            message["tool_calls"] = list(message.get("tool_calls", {}).values())
             if not message["tool_calls"]:
                 message["tool_calls"] = None
             debug_print(debug, "Received completion:", message)
@@ -234,11 +237,14 @@ class Swarm:
         messages: List,
         context_variables: dict = {},
         model_override: str = None,
+        temp_overide: float = None,
         stream: bool = False,
         debug: bool = False,
         max_turns: int = float("inf"),
         execute_tools: bool = True,
-    ) -> Response:
+    ) -> Union[
+        Response, Generator[Union[dict[str, str], Any, dict[str, Response]], Any, None]
+    ]:
         if stream:
             return self.run_and_stream(
                 agent=agent,
@@ -262,6 +268,7 @@ class Swarm:
                 history=history,
                 context_variables=context_variables,
                 model_override=model_override,
+                temp_overide=temp_overide,
                 stream=stream,
                 debug=debug,
             )
